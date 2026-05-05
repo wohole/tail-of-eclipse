@@ -1,0 +1,31 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Preview / temp
+*BrowserPreview_tmp.*
+BandiView_BrowserPreview_tmp.*
+*.tmp
+*.bak
+
+# ChatGPT dump images
+ChatGPT Image 2026*/
+
+# Unity generated
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+UserSettings/
+
+# IDE
+.vs/
+.idea/
+*.csproj
+*.sln
+*.suo
+*.user
+*.userprefs
