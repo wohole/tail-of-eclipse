@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Noir Fantasy HD-2D Prototype</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="game-container">
+        <div class="parallax-stage" id="stage">
+            <!-- Layer 1: Far Background (Moon & Tower) -->
+            <div class="layer far-bg" id="layer-far"></div>
+            
+            <!-- Layer 2: Midground (Golden Field) -->
+            <div class="layer mid-bg" id="layer-mid"></div>
+            
+            <!-- Layer 3: Foreground (Gothic Floor) -->
+            <div class="layer fore-bg" id="layer-fore"></div>
+            
+            <!-- Player Character -->
+            <div class="player" id="player"></div>
+
+            <!-- UI Overlay -->
+            <div class="ui-overlay">
+                <div class="character-status">
+                    <div class="avatar"></div>
+                    <div class="info">
+                        <div class="name">MOONG</div>
+                        <div class="hp-bar"><div class="hp-fill"></div></div>
+                    </div>
+                </div>
+                
+                <div class="title-card">
+                    <h1>TALL OF ECLIPSE</h1>
+                    <p>Noir Fantasy HD-2D Demo</p>
+                </div>
+                
+                <div class="controls-hint">WASD to Move / Shift to Run / Click to Move & Bloom</div>
+            </div>
+        </div>
+        
+        <!-- Post-processing effects -->
+        <div class="vignette"></div>
+        <div class="bloom-overlay" id="bloom"></div>
+    </div>
+
+    <!-- SVG Filter for Chroma Key (Magenta to Transparent) -->
+    <svg width="0" height="0" style="position: absolute;">
+        <filter id="chromaKey">
+            <feColorMatrix type="matrix" values="
+                1 0 0 0 0
+                0 1 0 0 0
+                0 0 1 0 0
+                -1 1 -1 1 0" />
+        </filter>
+    </svg>
+
+    <script src="main.js"></script>
+</body>
+</html>
