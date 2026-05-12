@@ -1,0 +1,1450 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Zero Room Test</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #111;
+        --panel: #181818;
+        --ink: #e9e9e9;
+        --muted: #a4a4a4;
+        --line: #383838;
+        --cat: #4aa3ff;
+        --dog: #f0cf4c;
+        --danger: #9c9c9c;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Arial, Helvetica, sans-serif;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+        padding: 18px;
+      }
+
+      .shell {
+        width: min(100%, 1180px);
+      }
+
+      .topbar,
+      .bottombar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 18px;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 40px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .topbar strong {
+        color: var(--ink);
+        font-size: 16px;
+        font-weight: 700;
+      }
+
+      .canvas-wrap {
+        position: relative;
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        border: 1px solid var(--line);
+        background: #202020;
+      }
+
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 14px;
+      }
+
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        display: inline-block;
+        background: #777;
+      }
+
+      .dot.cat {
+        border-radius: 50%;
+        background: var(--cat);
+      }
+
+      .dot.dog {
+        width: 0;
+        height: 0;
+        border-left: 6px solid transparent;
+        border-right: 6px solid transparent;
+        border-bottom: 11px solid var(--dog);
+        background: transparent;
+      }
+
+      .dot.enemy {
+        background: #050505;
+      }
+
+      .dot.trace {
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: 0 0 0 2px #777 inset;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <div class="topbar">
+        <strong>Zero Room Test</strong>
+        <span>WASD / 방향키 이동 · 멈추면 자동공격 · Tab 교대 · Space Eclipse · R 재시작</span>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="game" width="1280" height="720" aria-label="Zero Room Test playable demo"></canvas>
+      </div>
+      <div class="bottombar">
+        <div class="legend">
+          <span class="chip"><i class="dot cat"></i>냥: 빠름 / 원거리</span>
+          <span class="chip"><i class="dot dog"></i>뭉: 느림 / 방어</span>
+          <span class="chip"><i class="dot enemy"></i>추적자</span>
+          <span class="chip"><i class="dot trace"></i>파트너 흔적</span>
+        </div>
+        <span>목표: 45초 생존, 위험한 흔적 회수, 공명 100% 충격파</span>
+      </div>
+    </main>
+
+    <script>
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+      const W = canvas.width;
+      const H = canvas.height;
+      const arena = { x: 90, y: 76, w: 1100, h: 560 };
+      const playArea = { x: 128, y: 382, w: 1014, h: 220 };
+      const laneYs = [414, 496, 578];
+      const keys = new Set();
+      const stageArt = {
+        night: loadImage("toe8.png"),
+        dawn: loadImage("toe6.png"),
+        boss: loadImage("assets/boss-stage/airship-boss-stage.png"),
+        cat: loadImage("assets/boss-stage/cat-sprite.png"),
+        dog: loadImage("assets/boss-stage/dog-sprite.png"),
+        tiger: loadImage("assets/boss-stage/tiger-mob.png"),
+        humanBossAim: loadImage("assets/boss-stage/human-boss-aim.png"),
+        humanBossStand: loadImage("assets/boss-stage/human-boss-stand.png"),
+        humanBossProne: loadImage("assets/boss-stage/human-boss-prone.png"),
+      };
+
+      const state = {
+        started: false,
+        over: false,
+        clear: false,
+        room: 1,
+        scar: null,
+        time: 0,
+        runTime: 0,
+        recorded: false,
+        end: null,
+        history: [],
+        last: performance.now(),
+        enemies: [],
+        bullets: [],
+        enemyBullets: [],
+        traces: [],
+        hazards: [],
+        shockwaves: [],
+        popups: [],
+        spawned: new Set(),
+        player: null,
+        log: null,
+      };
+
+      const roles = {
+        cat: { label: "CAT", speed: 245, radius: 15, hp: 3, color: "#4aa3ff", shotCd: 0.42, damage: 1 },
+        dog: { label: "DOG", speed: 176, radius: 20, hp: 4, color: "#f0cf4c", shotCd: 0.62, damage: 2 },
+      };
+
+      const totalRooms = 4;
+      const roomNames = ["Read Bullets", "Risk Trace", "Swap Resonance", "Eclipse Clear"];
+      const cautionNotes = [
+        "Phase 3 target: repeat 3+ runs without rewards",
+        "Room 2 traces should sit near danger edge, not center",
+        "Pass if players choose risky traces on their own",
+      ];
+      const scarText = {
+        missed: "엇갈림 흉터: first swap cooldown -30%",
+        regret: "미련 흉터: first trace resonance +15",
+        eclipse: "월식 흉터: one guard above 80 resonance",
+      };
+      const scarDefs = [
+        { id: "missed", title: "엇갈림 흉터", desc: "다음 런 첫 교대 쿨타임 -30%" },
+        { id: "regret", title: "미련 흉터", desc: "다음 런 첫 흔적 공명 +15" },
+        { id: "eclipse", title: "월식 흉터", desc: "공명 80% 이상에서 1회 보호" },
+      ];
+      const memoryFragments = {
+        traces: "기억 조각 01 — 방금 네가 지나간 자리에, 아직 온기가 남아 있었다.",
+        swaps: "기억 조각 02 — 우리는 만나지 못했지만, 같은 박자로 움직였다.",
+        eclipse: "기억 조각 03 — 잠깐, 같은 세계였던 것 같다.",
+        door: "기억 조각 04 — 문 앞까지 갔는데, 꼬리는 닿지 않았다.",
+        clear: "기억 조각 05 — 이번에는 조금 더 가까웠다.",
+      };
+
+      reset();
+
+      window.addEventListener("keydown", (event) => {
+        if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Tab"].includes(event.key)) {
+          event.preventDefault();
+        }
+        const lowerKey = event.key.toLowerCase();
+        if ((state.over || state.clear) && state.end) {
+          if (["1", "2", "3"].includes(event.key)) selectScar(Number(event.key) - 1);
+          if (event.key === "Enter" && state.end.selectedScar) restartFromEnd();
+          return;
+        }
+        if (!state.started) state.started = true;
+        if (!keys.has(lowerKey) && (lowerKey === "w" || lowerKey === "arrowup")) changeLane(-1);
+        if (!keys.has(lowerKey) && (lowerKey === "s" || lowerKey === "arrowdown")) changeLane(1);
+        if (event.key === "Tab") swap();
+        if (event.key === " ") eclipse();
+        if (event.key.toLowerCase() === "r") reset();
+        keys.add(lowerKey);
+      });
+
+      window.addEventListener("keyup", (event) => {
+        keys.delete(event.key.toLowerCase());
+      });
+
+      canvas.addEventListener("pointerdown", (event) => {
+        if (!state.end || (!state.over && !state.clear)) return;
+        const rect = canvas.getBoundingClientRect();
+        const x = ((event.clientX - rect.left) / rect.width) * W;
+        const y = ((event.clientY - rect.top) / rect.height) * H;
+        for (let i = 0; i < 3; i += 1) {
+          const r = scarRect(i);
+          if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) selectScar(i);
+        }
+        const b = restartRect();
+        if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h && state.end.selectedScar) {
+          restartFromEnd();
+        }
+      });
+
+      requestAnimationFrame(loop);
+
+      function reset() {
+        state.started = false;
+        state.over = false;
+        state.clear = false;
+        state.room = 1;
+        state.scar = localStorage.getItem("zero-room-scar") || null;
+        state.time = 0;
+        state.runTime = 0;
+        state.recorded = false;
+        state.end = null;
+        state.history = loadHistory();
+        state.enemies = [];
+        state.bullets = [];
+        state.enemyBullets = [];
+        state.traces = [];
+        state.hazards = [];
+        state.shockwaves = [];
+        state.popups = [];
+        state.spawned = new Set();
+        state.player = {
+          x: arena.x + arena.w * 0.5,
+          y: laneYs[1],
+          lane: 1,
+          role: "cat",
+          hp: 3,
+          maxHp: 3,
+          resonance: 0,
+          invuln: 0,
+          guard: 0,
+          idle: 0,
+          shotCd: 0,
+          swapCd: 0,
+          eclipseCd: 0,
+        };
+        state.log = {
+          retries: Number(localStorage.getItem("zero-room-retries") || 0),
+          moveDistance: 0,
+          stopAttacks: 0,
+          traces: 0,
+          swaps: 0,
+          hits: 0,
+          eclipses: 0,
+          deaths: 0,
+          damageEvents: [],
+          roomsCleared: 0,
+          reachedRoom: 1,
+          firstTraceUsed: false,
+          firstSwapUsed: false,
+          sameTraceTouches: 0,
+          restartPressed: 0,
+          scarBlocked: false,
+        };
+        setupRoom(1);
+      }
+
+      function setupRoom(room) {
+        state.room = room;
+        state.log.reachedRoom = Math.max(state.log.reachedRoom, room);
+        state.time = 0;
+        state.enemies = [];
+        state.bullets = [];
+        state.enemyBullets = [];
+        state.traces = [];
+        state.hazards = [];
+        state.shockwaves = [];
+        state.popups = [];
+        state.spawned = new Set();
+        state.player.x = playArea.x + playArea.w * 0.22;
+        state.player.lane = 1;
+        state.player.y = laneYs[state.player.lane];
+        state.player.idle = 0;
+        state.player.shotCd = 0;
+        state.player.swapCd = 0;
+        state.player.guard = 0;
+
+        if (room === 1) {
+          spawnEnemy(playArea.x + playArea.w + 70, laneYs[1], 0.72, 5);
+          spawnTurret(playArea.x + playArea.w - 160, laneYs[0], 4);
+          spawnTrace(playArea.x + 390, laneYs[0], "dog", 10);
+        } else if (room === 2) {
+          spawnEnemy(playArea.x + playArea.w + 60, laneYs[0], 0.78, 5);
+          spawnEnemy(playArea.x + playArea.w + 120, laneYs[2], 0.78, 5);
+          spawnTurret(playArea.x + playArea.w - 90, laneYs[1], 5);
+          spawnTrace(playArea.x + 650, laneYs[1], "cat", 10);
+          spawnHazard(playArea.x + 610, laneYs[1], 58, 0.9);
+        } else if (room === 3) {
+          state.player.resonance = Math.max(state.player.resonance, 55);
+          spawnEnemy(playArea.x + playArea.w + 80, laneYs[0], 0.78, 5);
+          spawnEnemy(playArea.x + playArea.w + 140, laneYs[2], 0.9, 6);
+          spawnTurret(playArea.x + playArea.w - 130, laneYs[1], 5);
+          spawnTrace(playArea.x + 470, laneYs[2], "cat", 0);
+          spawnHazard(playArea.x + 430, laneYs[2], 54, 0.85);
+          spawnTrace(playArea.x + 740, laneYs[0], "dog", 0);
+        } else if (room === 4) {
+          state.player.resonance = Math.max(state.player.resonance, 60);
+          spawnBoss();
+          spawnTurret(playArea.x + playArea.w - 90, laneYs[0], 6);
+          spawnTrace(playArea.x + 330, laneYs[2], "cat", 5);
+          spawnTrace(playArea.x + 820, laneYs[0], "dog", 5);
+          spawnHazard(playArea.x + 520, laneYs[1], 58, 0.95);
+        }
+        addPopup(W / 2, 116, `ROOM ${room}: ${roomNames[room - 1]}`);
+      }
+
+      function loop(now) {
+        const dt = Math.min(0.033, (now - state.last) / 1000);
+        state.last = now;
+        update(dt);
+        draw();
+        requestAnimationFrame(loop);
+      }
+
+      function update(dt) {
+        const p = state.player;
+        if (!state.started || state.over || state.clear) {
+          updateEffects(dt);
+          return;
+        }
+
+        state.time += dt;
+        state.runTime += dt;
+        timeline();
+
+        const move = inputVector();
+        const targetY = laneYs[p.lane];
+        const laneMoving = Math.abs(targetY - p.y) > 1;
+        const moving = Math.abs(move.x) > 0 || laneMoving;
+        const role = roles[p.role];
+
+        if (moving) {
+          const beforeX = p.x;
+          const beforeY = p.y;
+          p.x = clamp(p.x + move.x * role.speed * dt, playArea.x + role.radius, playArea.x + playArea.w - role.radius);
+          p.y += (targetY - p.y) * Math.min(1, dt * 12);
+          state.log.moveDistance += Math.hypot(p.x - beforeX, p.y - beforeY);
+          p.idle = 0;
+        } else {
+          p.idle += dt;
+          autoAttack(dt);
+        }
+
+        p.invuln -= dt;
+        p.guard -= dt;
+        p.swapCd -= dt;
+        p.shotCd -= dt;
+        p.eclipseCd -= dt;
+
+        updateEnemies(dt);
+        updateBullets(dt);
+        updateEnemyBullets(dt);
+        updateHazards(dt);
+        updateTraces();
+        updateEffects(dt);
+
+        if (state.room === 4 && !state.enemies.some((enemy) => enemy.boss)) {
+          state.clear = true;
+          recordRun("clear");
+          prepareRunEnd("clear");
+        }
+
+        if (p.hp <= 0) {
+          state.over = true;
+          state.log.deaths += 1;
+          recordRun("fail");
+          prepareRunEnd("fail");
+          localStorage.setItem("zero-room-retries", String(state.log.retries + 1));
+        }
+
+        if (state.time >= 45) completeRoom();
+      }
+
+      function completeRoom() {
+        state.log.roomsCleared += 1;
+        if (state.room >= totalRooms) {
+          state.clear = true;
+          recordRun("clear");
+          prepareRunEnd("clear");
+          return;
+        }
+        const nextRoom = state.room + 1;
+        state.player.hp = Math.min(state.player.maxHp, state.player.hp + 1);
+        setupRoom(nextRoom);
+      }
+
+      function recordRun(result) {
+        if (state.recorded) return;
+        state.recorded = true;
+        const run = {
+          at: Date.now(),
+          result,
+          seconds: Math.round(state.runTime),
+          traces: state.log.traces,
+          swaps: state.log.swaps,
+          eclipses: state.log.eclipses,
+          reachedRoom: state.log.reachedRoom,
+          bossClear: false,
+          restarted: false,
+          scarChoiceMs: 0,
+        };
+        state.history = [run, ...loadHistory()].slice(0, 10);
+        localStorage.setItem("zero-room-history", JSON.stringify(state.history));
+      }
+
+      function loadHistory() {
+        try {
+          const parsed = JSON.parse(localStorage.getItem("zero-room-history") || "[]");
+          return Array.isArray(parsed) ? parsed.slice(0, 10) : [];
+        } catch {
+          return [];
+        }
+      }
+
+      function prepareRunEnd(result) {
+        if (state.end) return;
+        const lastHit = state.log.damageEvents[state.log.damageEvents.length - 1] || null;
+        state.end = {
+          result,
+          reachedRoom: state.log.reachedRoom,
+          lastHit,
+          memory: chooseMemory(result),
+          suggestedScar: chooseScar(),
+          choices: scarDefs,
+          selectedScar: null,
+          openedAt: performance.now(),
+          choiceMs: 0,
+        };
+      }
+
+      function chooseMemory(result) {
+        if (result === "clear" && state.room >= totalRooms) return memoryFragments.clear;
+        if (state.log.eclipses >= 2) return memoryFragments.eclipse;
+        if (state.log.swaps >= 6) return memoryFragments.swaps;
+        if (state.log.traces >= 5) return memoryFragments.traces;
+        if (state.log.reachedRoom >= totalRooms) return memoryFragments.door;
+        return "기억 조각 00 — 실패했지만, 흔적이 남았다.";
+      }
+
+      function selectScar(index) {
+        if (!state.end || !scarDefs[index]) return;
+        const scar = scarDefs[index];
+        state.end.selectedScar = scar.id;
+        state.end.choiceMs = Math.round(performance.now() - state.end.openedAt);
+        localStorage.setItem("zero-room-scar", scar.id);
+        updateLastRun({ scar: scar.id, scarChoiceMs: state.end.choiceMs });
+      }
+
+      function restartFromEnd() {
+        if (!state.end || !state.end.selectedScar) return;
+        updateLastRun({ restarted: true });
+        reset();
+      }
+
+      function updateLastRun(patch) {
+        const hist = loadHistory();
+        if (!hist.length) return;
+        hist[0] = { ...hist[0], ...patch };
+        state.history = hist.slice(0, 10);
+        localStorage.setItem("zero-room-history", JSON.stringify(state.history));
+      }
+
+      function chooseScar() {
+        if (state.player.resonance >= 80) return "eclipse";
+        if (state.log.traces < 5) return "regret";
+        if (state.log.swaps < 6 || state.log.sameTraceTouches > 0) return "missed";
+        return "missed";
+        const lastHit = state.log.damageEvents[state.log.damageEvents.length - 1];
+        if (state.player.resonance >= 80) return "eclipse";
+        if (state.log.traces === 0) return "regret";
+        if (lastHit && lastHit.reason.includes("장판")) return "crack";
+        return "missed";
+      }
+
+      function timeline() {
+        if (state.room === 2) return timelineTraceRoom();
+        if (state.room === 3) return timelineSwapEclipseRoom();
+        if (state.room === 4) return timelineBossRoom();
+        at(2, () => fireLaneStream(0, 3, 0.55));
+        at(5, () => spawnEnemy(playArea.x + playArea.w + 80, laneYs[2], 0.72, 5));
+        at(8, () => fireCrossLanes(4));
+        at(13, () => spawnEnemy(playArea.x + playArea.w + 100, laneYs[0], 0.75, 5));
+        at(16, () => spawnTrace(playArea.x + 620, laneYs[2], "cat", 0));
+        at(18, () => fireLaneStream(2, 4, 0.48, "large"));
+        at(24, () => fireDiagonalRain(4, "down-left"));
+        at(31, () => spawnTrace(playArea.x + 840, laneYs[1], "dog", 0));
+        at(36, () => fireFan(playArea.x + playArea.w + 45, laneYs[1], Math.PI, 5, 145));
+      }
+
+      function timelineTraceRoom() {
+        at(3, () => fireLaneStream(2, 4, 0.45));
+        at(6, () => {
+          fireDiagonalRain(5, "down-left");
+          spawnTrace(playArea.x + 430, laneYs[0], "dog", 10);
+        });
+        at(12, () => spawnEnemy(1040, 520, 1.05, 6));
+        at(16, () => {
+          fireSlowOrbs(3);
+          spawnTrace(playArea.x + 790, laneYs[1], "cat", 10);
+        });
+        at(22, () => fireLaneStream(1, 5, 0.42));
+        at(28, () => {
+          fireDiagonalRain(6, "up-left");
+          spawnTrace(playArea.x + 620, laneYs[2], state.player.role === "cat" ? "dog" : "cat", 10);
+        });
+        at(38, () => spawnEnemy(210, 520, 1.12, 7));
+      }
+
+      function timelineSwapEclipseRoom() {
+        at(4, () => fireLaneStream(0, 4, 0.45));
+        at(7, () => spawnTrace(playArea.x + 300, laneYs[2], "cat", 0));
+        at(8, () => fireLaneStream(2, 5, 0.38));
+        at(12, () => spawnTrace(playArea.x + 810, laneYs[0], "dog", 0));
+        at(15, () => spawnEnemy(1030, 510, 1.08, 7));
+        at(19, () => {
+          fireLaneStream(0, 3, 0.35);
+          fireLaneStream(2, 3, 0.35);
+        });
+        at(24, () => spawnTrace(playArea.x + 535, laneYs[1], state.player.role === "cat" ? "dog" : "cat", 5));
+        at(25, () => fireFan(playArea.x + playArea.w + 45, laneYs[1], Math.PI, 7, 138));
+        at(31, () => {
+          state.player.resonance = Math.max(state.player.resonance, 85);
+          spawnTrace(playArea.x + 870, laneYs[2], state.player.role === "cat" ? "dog" : "cat", 0);
+        });
+        at(36, () => spawnEnemy(240, 500, 1.15, 8));
+      }
+
+      function timelineBossRoom() {
+        at(4, () => bossPattern("fan"));
+        at(7, () => spawnTrace(365, 470, state.player.role === "cat" ? "dog" : "cat", 5));
+        at(11, () => bossPattern("drop"));
+        at(15, () => spawnTiger(250, 520, 1.1, 6));
+        at(20, () => spawnTrace(965, 455, state.player.role === "cat" ? "dog" : "cat", 5));
+        at(23, () => bossPattern("aimed"));
+        at(30, () => bossPattern("fan"));
+        at(34, () => bossPattern("drop"));
+        at(39, () => spawnTrace(650, 195, state.player.role === "cat" ? "dog" : "cat", 10));
+      }
+
+      function at(second, fn) {
+        const key = String(second);
+        if (state.time >= second && !state.spawned.has(key)) {
+          state.spawned.add(key);
+          fn();
+        }
+      }
+
+      function fireEnemyBullet(x, y, vx, vy, r = 8, life = 7, kind = "orb") {
+        state.enemyBullets.push({ x, y, vx, vy, r, life, kind });
+      }
+
+      function fireLaneStream(lane, count, gap, kind = "lane") {
+        for (let i = 0; i < count; i += 1) {
+          const large = kind === "large";
+          fireEnemyBullet(playArea.x + playArea.w + 35 + i * 72, laneYs[lane], large ? -96 : -150, 0, large ? 18 : 8, large ? 9 : 8, large ? "large" : "lane");
+        }
+      }
+
+      function fireCrossLanes(count) {
+        for (let i = 0; i < count; i += 1) {
+          fireEnemyBullet(playArea.x + playArea.w + 40 + i * 82, laneYs[0], -132, 46, 8, 8, "diag");
+          fireEnemyBullet(playArea.x + playArea.w + 80 + i * 82, laneYs[2], -132, -46, 8, 8, "diag");
+        }
+      }
+
+      function fireDiagonalRain(count, mode) {
+        for (let i = 0; i < count; i += 1) {
+          const y = mode === "up-left" ? laneYs[2] + 28 : laneYs[0] - 28;
+          const vy = mode === "up-left" ? -64 : 64;
+          fireEnemyBullet(playArea.x + playArea.w + 20 + i * 82, y, -135, vy, 7, 8, "diag");
+        }
+      }
+
+      function fireSlowOrbs(count) {
+        for (let i = 0; i < count; i += 1) {
+          fireEnemyBullet(playArea.x + playArea.w + 50 + i * 120, laneYs[i % laneYs.length], -92, 0, 14, 9, "slow");
+        }
+      }
+
+      function fireFan(x, y, angle, count, speed) {
+        const spread = 0.72;
+        for (let i = 0; i < count; i += 1) {
+          const t = count === 1 ? 0 : i / (count - 1) - 0.5;
+          const a = angle + t * spread;
+          fireEnemyBullet(x, y, Math.cos(a) * speed, Math.sin(a) * speed, 8, 7, "fan");
+        }
+      }
+
+      function bossPattern(kind) {
+        if (kind === "fan") return bossFan();
+        if (kind === "drop") return fireDropRain(6);
+        if (kind === "aimed") {
+          fireAimedShot();
+          setTimeout(() => fireAimedShot(), 220);
+        }
+      }
+
+      function bossFan() {
+        const boss = state.enemies.find((enemy) => enemy.boss);
+        if (!boss) return;
+        fireFan(boss.x - 28, boss.y - 18, Math.PI, 7, 150);
+      }
+
+      function fireDropRain(count) {
+        for (let i = 0; i < count; i += 1) {
+          const x = playArea.x + 160 + i * ((playArea.w - 320) / Math.max(1, count - 1));
+          fireEnemyBullet(x, playArea.y - 50, 0, 125, 8, 6, "drop");
+        }
+      }
+
+      function fireAimedShot() {
+        const boss = state.enemies.find((enemy) => enemy.boss);
+        if (!boss) return;
+        const a = Math.atan2(state.player.y - boss.y, state.player.x - boss.x);
+        fireEnemyBullet(boss.x, boss.y - 16, Math.cos(a) * 190, Math.sin(a) * 190, 10, 6, "aimed");
+      }
+
+      function inputVector() {
+        let x = 0;
+        if (keys.has("a") || keys.has("arrowleft")) x -= 1;
+        if (keys.has("d") || keys.has("arrowright")) x += 1;
+        return { x };
+      }
+
+      function changeLane(delta) {
+        if (!state.player || state.over || state.clear) return;
+        state.player.lane = clamp(state.player.lane + delta, 0, laneYs.length - 1);
+      }
+
+      function autoAttack() {
+        const p = state.player;
+        const role = roles[p.role];
+        if (p.idle < 0.22 || p.shotCd > 0) return;
+        const enemy = closestEnemy();
+        if (!enemy) return;
+        const angle = Math.atan2(enemy.y - p.y, enemy.x - p.x);
+        state.bullets.push({
+          x: p.x,
+          y: p.y,
+          vx: Math.cos(angle) * 520,
+          vy: Math.sin(angle) * 520,
+          r: p.role === "cat" ? 4 : 6,
+          damage: role.damage,
+          life: 0.9,
+        });
+        p.shotCd = role.shotCd;
+        state.log.stopAttacks += 1;
+      }
+
+      function swap() {
+        const p = state.player;
+        if (!state.started || state.over || state.clear || p.swapCd > 0) return;
+        const old = p.role;
+        spawnTrace(p.x, p.y, old, 8);
+        p.role = old === "cat" ? "dog" : "cat";
+        p.maxHp = roles[p.role].hp;
+        p.hp = Math.min(p.maxHp, p.hp + (p.role === "dog" ? 1 : 0));
+        p.resonance = Math.min(100, p.resonance + 5);
+        p.swapCd = state.scar === "missed" && !state.log.firstSwapUsed ? 1.05 : 1.5;
+        state.log.firstSwapUsed = true;
+        p.invuln = p.role === "dog" ? 0.5 : 0.22;
+        p.guard = p.role === "dog" ? 0.8 : 0;
+        state.log.swaps += 1;
+        addPopup(p.x, p.y - 34, p.role === "dog" ? "GUARD" : "+5");
+      }
+
+      function eclipse() {
+        const p = state.player;
+        if (p.resonance < 100 || p.eclipseCd > 0 || state.over || state.clear) return;
+        p.resonance = 0;
+        p.eclipseCd = 1.0;
+        state.log.eclipses += 1;
+        state.shockwaves.push({ x: p.x, y: p.y, r: 18, life: 0.65, max: 380 });
+        state.enemyBullets = [];
+        for (let i = state.enemies.length - 1; i >= 0; i -= 1) {
+          const e = state.enemies[i];
+          if (Math.hypot(e.x - p.x, e.y - p.y) < 390) state.enemies.splice(i, 1);
+        }
+      }
+
+      function spawnEnemy(x, y, pressure = 1, hp = 3) {
+        const enemy = {
+          x: clamp(x, playArea.x + 18, playArea.x + playArea.w - 18),
+          y: clamp(y, laneYs[0] - 18, laneYs[laneYs.length - 1] + 18),
+          r: 17,
+          hp,
+          maxHp: hp,
+          speed: (126 + Math.random() * 18) * pressure,
+          shotCd: 1.1 + Math.random() * 0.8,
+        };
+        state.enemies.push(enemy);
+        return enemy;
+      }
+
+      function spawnTurret(x, y, hp = 4) {
+        const turret = spawnEnemy(x, y, 0, hp);
+        turret.turret = true;
+        turret.r = 18;
+        turret.shotCd = 0.35;
+        return turret;
+      }
+
+      function spawnBoss() {
+        const boss = spawnEnemy(arena.x + arena.w * 0.5, arena.y + arena.h * 0.64, 0.62, 26);
+        boss.r = 38;
+        boss.boss = true;
+        boss.humanBoss = true;
+        boss.phase = "stand";
+        return boss;
+      }
+
+      function spawnTiger(x, y, pressure = 1, hp = 5) {
+        const tiger = spawnEnemy(x, y, pressure, hp);
+        tiger.tiger = true;
+        tiger.r = 22;
+        tiger.chargeCd = 0.4;
+        return tiger;
+      }
+
+      function spawnTrace(x, y, from, boost) {
+        state.traces.push({
+          x: clamp(x, playArea.x + 24, playArea.x + playArea.w - 24),
+          y: clamp(y, laneYs[0] - 22, laneYs[laneYs.length - 1] + 22),
+          r: 18,
+          from,
+          boost,
+          blocked: 0,
+          pulse: Math.random() * 10,
+        });
+      }
+
+      function spawnHazard(x, y, r, warn) {
+        state.hazards.push({
+          x: clamp(x, arena.x + r, arena.x + arena.w - r),
+          y: clamp(y, arena.y + r, arena.y + arena.h - r),
+          r,
+          warn,
+          time: 0,
+          hit: false,
+        });
+      }
+
+      function updateEnemies(dt) {
+        const p = state.player;
+        for (const e of state.enemies) {
+          if (e.humanBoss) {
+            if (state.time % 9 > 6) e.phase = "prone";
+            else if (state.time % 9 > 3) e.phase = "aim";
+            else e.phase = "stand";
+          }
+          if (e.turret) {
+            e.shotCd -= dt;
+            if (e.shotCd <= 0) {
+              fireEnemyBullet(e.x - 12, e.y, -132, 0, 8, 8, "turret");
+              e.shotCd = 1.7;
+            }
+            continue;
+          }
+          if (e.tiger) {
+            e.chargeCd -= dt;
+            if (e.chargeCd <= 0) {
+              e.x -= 260 * dt;
+              if (e.x < playArea.x + 40) e.chargeCd = 1.1;
+            }
+          }
+          const angle = Math.atan2(p.y - e.y, p.x - e.x);
+          const moveScale = e.humanBoss && e.phase === "prone" ? 0.25 : 1;
+          if (!e.tiger) {
+            e.x += Math.cos(angle) * e.speed * moveScale * dt;
+            e.y += Math.sin(angle) * e.speed * moveScale * dt;
+          }
+          e.x = clamp(e.x, playArea.x + e.r, playArea.x + playArea.w - e.r);
+          e.y = clamp(e.y, laneYs[0] - 20, laneYs[laneYs.length - 1] + 20);
+          if (Math.hypot(e.x - p.x, e.y - p.y) < e.r + roles[p.role].radius) damage("추적자 접촉", e.x, e.y);
+        }
+      }
+
+      function updateBullets(dt) {
+        for (let i = state.bullets.length - 1; i >= 0; i -= 1) {
+          const b = state.bullets[i];
+          b.x += b.vx * dt;
+          b.y += b.vy * dt;
+          b.life -= dt;
+          let remove = b.life <= 0;
+          for (let j = state.enemies.length - 1; j >= 0; j -= 1) {
+            const e = state.enemies[j];
+            if (Math.hypot(e.x - b.x, e.y - b.y) < e.r + b.r) {
+              e.hp -= b.damage;
+              remove = true;
+              addPopup(e.x, e.y - 24, "hit");
+              if (e.hp <= 0) state.enemies.splice(j, 1);
+              break;
+            }
+          }
+          if (remove) state.bullets.splice(i, 1);
+        }
+      }
+
+      function updateEnemyBullets(dt) {
+        const p = state.player;
+        for (let i = state.enemyBullets.length - 1; i >= 0; i -= 1) {
+          const b = state.enemyBullets[i];
+          b.x += b.vx * dt;
+          b.y += b.vy * dt;
+          b.life -= dt;
+          if (Math.hypot(p.x - b.x, p.y - b.y) < roles[p.role].radius + b.r) {
+            if (p.role === "dog" && (b.kind === "large" || b.r >= 14) && p.guard <= 0) {
+              p.guard = 0.65;
+              p.invuln = 0.25;
+              addPopup(p.x, p.y - 42, "BIG GUARD");
+              state.enemyBullets.splice(i, 1);
+              continue;
+            }
+            damage("탄막 피격", b.x, b.y, "bullet");
+            state.enemyBullets.splice(i, 1);
+            continue;
+          }
+          if (b.life <= 0 || b.x < playArea.x - 90 || b.x > playArea.x + playArea.w + 130 || b.y < playArea.y - 120 || b.y > playArea.y + playArea.h + 80) {
+            state.enemyBullets.splice(i, 1);
+          }
+        }
+      }
+
+      function updateHazards(dt) {
+        const p = state.player;
+        for (let i = state.hazards.length - 1; i >= 0; i -= 1) {
+          const h = state.hazards[i];
+          h.time += dt;
+          if (h.time >= h.warn && h.time <= h.warn + 0.18 && !h.hit) {
+            h.hit = true;
+            if (Math.hypot(h.x - p.x, h.y - p.y) < h.r + roles[p.role].radius) {
+              if (damage("경고 장판", h.x, h.y, "hazard")) {
+                const a = Math.atan2(p.y - h.y, p.x - h.x);
+                p.x = clamp(p.x + Math.cos(a) * 38, arena.x + roles[p.role].radius, arena.x + arena.w - roles[p.role].radius);
+                p.y = clamp(p.y + Math.sin(a) * 38, arena.y + roles[p.role].radius, arena.y + arena.h - roles[p.role].radius);
+              }
+            }
+          }
+          if (h.time > h.warn + 0.42) state.hazards.splice(i, 1);
+        }
+      }
+
+      function updateTraces() {
+        const p = state.player;
+        for (let i = state.traces.length - 1; i >= 0; i -= 1) {
+          const t = state.traces[i];
+          t.pulse += 0.08;
+          if (t.blocked > 0) t.blocked -= 1;
+          if (Math.hypot(t.x - p.x, t.y - p.y) < t.r + roles[p.role].radius) {
+            if (t.from === p.role) {
+              if (t.blocked <= 0) {
+                addPopup(t.x, t.y - 28, "SWAP");
+                t.blocked = 28;
+                state.log.sameTraceTouches += 1;
+              }
+              continue;
+            }
+            const dangerBonus = isTraceInArmedHazard(t) ? 10 : 0;
+            const scarBonus = state.scar === "regret" && !state.log.firstTraceUsed ? 15 : 0;
+            const gain = 35 + t.boost + dangerBonus + scarBonus;
+            p.resonance = Math.min(100, p.resonance + gain);
+            state.log.firstTraceUsed = true;
+            state.log.traces += 1;
+            addPopup(t.x, t.y - 28, `+${gain}`);
+            state.traces.splice(i, 1);
+          }
+        }
+      }
+
+      function isTraceInArmedHazard(trace) {
+        return state.hazards.some((h) => Math.hypot(h.x - trace.x, h.y - trace.y) < h.r + trace.r);
+      }
+
+      function updateEffects(dt) {
+        for (let i = state.shockwaves.length - 1; i >= 0; i -= 1) {
+          const s = state.shockwaves[i];
+          s.life -= dt;
+          s.r += (s.max - s.r) * dt * 5.8;
+          if (s.life <= 0) state.shockwaves.splice(i, 1);
+        }
+        for (let i = state.popups.length - 1; i >= 0; i -= 1) {
+          const p = state.popups[i];
+          p.y -= dt * 24;
+          p.life -= dt;
+          if (p.life <= 0) state.popups.splice(i, 1);
+        }
+      }
+
+      function damage(reason, x, y, source = "contact") {
+        const p = state.player;
+        if (p.invuln > 0) return false;
+        if (source === "hazard" && p.role === "dog" && p.guard > 0) {
+          p.guard = 0;
+          p.invuln = 0.35;
+          addPopup(p.x, p.y - 36, "GUARD");
+          return false;
+        }
+        if (state.scar === "eclipse" && p.resonance >= 80 && !state.log.scarBlocked) {
+          state.log.scarBlocked = true;
+          p.invuln = 0.6;
+          addPopup(p.x, p.y - 56, "ECLIPSE SCAR");
+          return false;
+        }
+        let loss = p.role === "dog" ? 0.5 : 1;
+        p.hp -= loss;
+        p.invuln = p.role === "dog" ? 0.85 : 0.95;
+        state.log.hits += 1;
+        state.log.damageEvents.push({ t: state.time.toFixed(1), reason, x: Math.round(x), y: Math.round(y) });
+        addPopup(p.x, p.y - 36, p.role === "dog" ? "-0.5" : "-1");
+        return true;
+      }
+
+      function closestEnemy() {
+        let best = null;
+        let bestD = Infinity;
+        for (const e of state.enemies) {
+          const d = Math.hypot(e.x - state.player.x, e.y - state.player.y);
+          if (d < bestD) {
+            best = e;
+            bestD = d;
+          }
+        }
+        return best;
+      }
+
+      function addPopup(x, y, text) {
+        state.popups.push({ x, y, text, life: 0.8 });
+      }
+
+      function draw() {
+        ctx.clearRect(0, 0, W, H);
+        drawRoom();
+        drawHazards();
+        drawTraces();
+        drawBullets();
+        drawEnemyBullets();
+        drawEnemies();
+        drawPlayer();
+        drawShockwaves();
+        drawEclipseFlash();
+        drawPopups();
+        drawHud();
+        drawCautions();
+        if (!state.started) overlay("Zero Room Test", "Press any key to start the 5-room run");
+        if ((state.over || state.clear) && state.end) drawRunEndScreen();
+      }
+
+      function drawRoom() {
+        const warm = state.player && state.player.role === "dog" ? 1 : 0;
+        ctx.fillStyle = "#09111a";
+        ctx.fillRect(0, 0, W, H);
+        if (state.room === 4) {
+          drawCover(stageArt.boss, 0, 0, W, H);
+        } else {
+          drawCover(stageArt.night, 0, 0, W, H);
+        }
+        if (state.room !== 4 && warm > 0 && stageArt.dawn.complete) {
+          ctx.save();
+          ctx.globalAlpha = 0.34;
+          drawCover(stageArt.dawn, 0, 0, W, H);
+          ctx.restore();
+        }
+
+        ctx.save();
+        const vignette = ctx.createRadialGradient(W * 0.5, H * 0.42, 160, W * 0.5, H * 0.55, 760);
+        vignette.addColorStop(0, "rgba(255,255,255,0.02)");
+        vignette.addColorStop(0.62, "rgba(4,8,14,0.1)");
+        vignette.addColorStop(1, "rgba(0,0,0,0.62)");
+        ctx.fillStyle = vignette;
+        ctx.fillRect(0, 0, W, H);
+
+        const floorY = playArea.y - 16;
+        const floorH = playArea.h + 46;
+        ctx.fillStyle = "rgba(12,16,20,0.16)";
+        ctx.fillRect(playArea.x, floorY, playArea.w, floorH);
+        ctx.strokeStyle = "rgba(220,230,240,0.18)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(playArea.x, floorY, playArea.w, floorH);
+        ctx.strokeStyle = "rgba(220,230,240,0.1)";
+        ctx.lineWidth = 1;
+        for (let x = playArea.x + 36; x < playArea.x + playArea.w; x += 72) line(x, floorY, x - 18, floorY + floorH);
+        for (const y of laneYs) {
+          ctx.strokeStyle = "rgba(255,255,255,0.18)";
+          line(playArea.x, y, playArea.x + playArea.w, y);
+        }
+
+        ctx.strokeStyle = "rgba(255,255,255,0.1)";
+        ctx.setLineDash([8, 8]);
+        ctx.strokeRect(playArea.x, playArea.y, playArea.w, playArea.h);
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+
+      function drawHazards() {
+        for (const h of state.hazards) {
+          const armed = h.time >= h.warn;
+          ctx.beginPath();
+          ctx.arc(h.x, h.y, h.r, 0, Math.PI * 2);
+          ctx.fillStyle = armed ? "rgba(245,245,245,0.28)" : "rgba(150,170,190,0.18)";
+          ctx.fill();
+          ctx.strokeStyle = armed ? "#fff" : "rgba(210,225,245,0.78)";
+          ctx.lineWidth = armed ? 4 : 2;
+          ctx.stroke();
+          if (!armed) {
+            ctx.beginPath();
+            ctx.arc(h.x, h.y, h.r * clamp(h.time / h.warn, 0, 1), 0, Math.PI * 2);
+            ctx.strokeStyle = "#d8d8d8";
+            ctx.stroke();
+          }
+        }
+      }
+
+      function drawTraces() {
+        for (const t of state.traces) {
+          const pulse = Math.sin(t.pulse) * 3;
+          ctx.beginPath();
+          ctx.arc(t.x, t.y, t.r + pulse, 0, Math.PI * 2);
+          ctx.fillStyle = t.from === "cat" ? "rgba(104,190,255,0.78)" : "rgba(255,214,94,0.78)";
+          ctx.fill();
+          ctx.lineWidth = 3;
+          ctx.shadowColor = t.from === "cat" ? "#69c5ff" : "#ffd86d";
+          ctx.shadowBlur = 16;
+          ctx.strokeStyle = "#ffffff";
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+        }
+      }
+
+      function drawBullets() {
+        ctx.fillStyle = "#eeeeee";
+        for (const b of state.bullets) {
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawEnemyBullets() {
+        for (const b of state.enemyBullets) {
+          ctx.save();
+          ctx.translate(b.x, b.y);
+          ctx.scale(1.35, 0.82);
+          ctx.beginPath();
+          ctx.arc(0, 0, b.r, 0, Math.PI * 2);
+          ctx.fillStyle = b.kind === "drop" ? "rgba(190,220,255,0.9)" : "rgba(255,120,70,0.88)";
+          ctx.shadowColor = b.kind === "drop" ? "#b8dcff" : "#ff744d";
+          ctx.shadowBlur = 12;
+          ctx.fill();
+          ctx.strokeStyle = "rgba(255,255,255,0.75)";
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
+      function drawEnemies() {
+        for (const e of state.enemies) {
+          ctx.save();
+          ctx.shadowColor = "rgba(255,255,255,0.35)";
+          ctx.shadowBlur = 10;
+          if (e.boss) {
+            drawBossSprite(e);
+          } else if (e.tiger) {
+            drawSprite(stageArt.tiger, e.x, e.y, 72, 58, "#ff9b2f");
+          } else if (e.turret) {
+            ctx.fillStyle = "#2a1c13";
+            ctx.beginPath();
+            ctx.arc(e.x, e.y, e.r, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = "#ff7a34";
+            ctx.fillRect(e.x - 20, e.y - 5, 24, 10);
+          } else {
+            ctx.fillStyle = "#050505";
+            ctx.fillRect(e.x - e.r, e.y - e.r, e.r * 2, e.r * 2);
+          }
+          ctx.restore();
+          ctx.fillStyle = "#666";
+          const barW = e.boss ? 78 : 20;
+          ctx.fillRect(e.x - barW / 2, e.y - e.r - 12, barW * (e.hp / e.maxHp), e.boss ? 6 : 3);
+        }
+      }
+
+      function drawBossSprite(enemy) {
+        const sprite = enemy.phase === "prone" ? stageArt.humanBossProne : enemy.phase === "aim" ? stageArt.humanBossAim : stageArt.humanBossStand;
+        const w = enemy.phase === "prone" ? 94 : 82;
+        const h = enemy.phase === "prone" ? 58 : 86;
+        if (drawSprite(sprite, enemy.x, enemy.y, w, h, "#ff5733")) return;
+        ctx.fillStyle = "#2a0a0a";
+        ctx.beginPath();
+        ctx.moveTo(enemy.x, enemy.y - enemy.r);
+        ctx.lineTo(enemy.x - enemy.r * 1.15, enemy.y + enemy.r * 0.9);
+        ctx.lineTo(enemy.x + enemy.r * 1.15, enemy.y + enemy.r * 0.9);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      function drawSprite(sprite, x, y, w, h, glow) {
+        if (!sprite.complete || !sprite.naturalWidth) return false;
+        ctx.save();
+        ctx.shadowColor = glow;
+        ctx.shadowBlur = 12;
+        ctx.drawImage(sprite, x - w / 2, y - h * 0.72, w, h);
+        ctx.restore();
+        return true;
+      }
+
+      function drawPlayer() {
+        const p = state.player;
+        const role = roles[p.role];
+        ctx.save();
+        ctx.globalAlpha = p.invuln > 0 && Math.floor(performance.now() / 70) % 2 ? 0.45 : 1;
+        ctx.fillStyle = "rgba(0,0,0,0.38)";
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y + 13, p.role === "cat" ? 24 : 28, 7, 0, 0, Math.PI * 2);
+        ctx.fill();
+        const sprite = p.role === "cat" ? stageArt.cat : stageArt.dog;
+        const size = p.role === "cat" ? 58 : 64;
+        if (!drawSprite(sprite, p.x, p.y, size, size, role.color)) {
+          ctx.fillStyle = role.color;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, role.radius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        if (p.role === "dog" && p.guard > 0) {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, role.radius + 18, 0, Math.PI * 2);
+          ctx.strokeStyle = "rgba(255,255,255,0.9)";
+          ctx.lineWidth = 3;
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      function drawShockwaves() {
+        for (const s of state.shockwaves) {
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(255,255,255,${Math.max(0, s.life / 0.65)})`;
+          ctx.lineWidth = 10;
+          ctx.stroke();
+        }
+      }
+
+      function drawEclipseFlash() {
+        if (!state.shockwaves.length) return;
+        const power = Math.max(...state.shockwaves.map((s) => Math.max(0, s.life / 0.65)));
+        ctx.save();
+        ctx.globalCompositeOperation = "screen";
+        ctx.fillStyle = `rgba(190,220,255,${0.18 * power})`;
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
+      }
+
+      function drawPopups() {
+        ctx.textAlign = "center";
+        ctx.font = "18px Arial";
+        for (const p of state.popups) {
+          ctx.globalAlpha = Math.max(0, p.life / 0.8);
+          ctx.fillStyle = "#fff";
+          ctx.fillText(p.text, p.x, p.y);
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      function drawHud() {
+        const p = state.player;
+        const role = roles[p.role];
+        ctx.fillStyle = "rgba(16,16,16,0.86)";
+        ctx.fillRect(0, 0, W, 58);
+        ctx.fillRect(0, H - 72, W, 72);
+
+        ctx.fillStyle = "#e9e9e9";
+        ctx.font = "22px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(`${p.role === "cat" ? "CAT" : "DOG"} ${p.role === "cat" ? "circle" : "triangle"}`, 28, 37);
+        ctx.font = "16px Arial";
+        ctx.fillStyle = "#bcbcbc";
+        ctx.fillText(`ROOM ${state.room}/${totalRooms} ${roomNames[state.room - 1]} · ${Math.min(45, state.time).toFixed(1)} / 45.0`, 200, 36);
+
+        drawBar(390, 21, 180, 16, p.hp / p.maxHp, "#d9d9d9", "HP");
+        drawBar(610, 21, 260, 16, p.resonance / 100, "#ffffff", "RES");
+
+        ctx.fillStyle = p.swapCd > 0 ? "#777" : "#e9e9e9";
+        ctx.fillText(`TAB ${Math.max(0, p.swapCd).toFixed(1)}`, 910, 36);
+        ctx.fillStyle = p.resonance >= 100 ? "#fff" : "#777";
+        ctx.fillText("SPACE Eclipse", 1010, 36);
+
+        const y = H - 46;
+        ctx.fillStyle = "#d7d7d7";
+        ctx.font = "15px Arial";
+        ctx.fillText(`LOG`, 28, y);
+        ctx.fillStyle = "#a8a8a8";
+        ctx.fillText(`move ${Math.round(state.log.moveDistance)}px`, 82, y);
+        ctx.fillText(`stop atk ${state.log.stopAttacks}`, 215, y);
+        ctx.fillText(`traces ${state.log.traces}`, 350, y);
+        ctx.fillText(`swaps ${state.log.swaps}`, 445, y);
+        ctx.fillText(`hits ${state.log.hits}`, 535, y);
+        ctx.fillText(`Eclipse ${state.log.eclipses}`, 625, y);
+        ctx.fillText(`retry ${state.log.retries}`, 750, y);
+        if (state.scar) ctx.fillText(scarText[state.scar] || state.scar, 850, y);
+
+        const lastHit = state.log.damageEvents[state.log.damageEvents.length - 1];
+        if (lastHit && !state.scar) ctx.fillText(`last hit: ${lastHit.t}s (${lastHit.x}, ${lastHit.y})`, 850, y);
+        drawRunStats();
+      }
+
+      function drawRunStats() {
+        const x = W - 306;
+        const y = 76;
+        const w = 276;
+        const h = 214;
+        const hist = state.history;
+        const attempts = hist.length;
+        const restarts = hist.filter((r) => r.restarted).length;
+        const reachedFinal = hist.filter((r) => r.reachedRoom >= totalRooms).length;
+        const clears = hist.filter((r) => r.result === "clear").length;
+        const avgChoice = hist.filter((r) => r.scarChoiceMs).reduce((sum, r, _, arr) => sum + r.scarChoiceMs / arr.length, 0);
+        const currentPass = {
+          time: state.runTime >= 150 && state.runTime <= 220,
+          traces: state.log.traces >= 6,
+          swaps: state.log.swaps >= 4,
+          eclipse: state.log.eclipses >= 1,
+        };
+
+        ctx.save();
+        ctx.fillStyle = "rgba(12,12,12,0.76)";
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = "rgba(255,255,255,0.18)";
+        ctx.strokeRect(x, y, w, h);
+        ctx.textAlign = "left";
+        ctx.font = "13px Arial";
+        ctx.fillStyle = "#f2f2f2";
+        ctx.fillText("1-run test", x + 12, y + 22);
+        drawCheck(x + 12, y + 45, currentPass.time, `time ${formatTime(state.runTime)} / 180s`);
+        drawCheck(x + 12, y + 66, currentPass.traces, `traces ${state.log.traces} / 6`);
+        drawCheck(x + 12, y + 87, currentPass.swaps, `swaps ${state.log.swaps} / 4`);
+        drawCheck(x + 12, y + 108, currentPass.eclipse, `Eclipse ${state.log.eclipses} / 1`);
+
+        ctx.fillStyle = "#f2f2f2";
+        ctx.fillText(`10-run stats (${attempts}/10)`, x + 12, y + 138);
+        ctx.fillStyle = "#bdbdbd";
+        ctx.fillText(`restart chosen ${restarts}/10 target 6`, x + 12, y + 159);
+        ctx.fillText(`boss room reach ${reachedFinal}/10 target 6`, x + 12, y + 179);
+        ctx.fillText(`boss clear ${clears}/${attempts || 1} · scar think ${(avgChoice / 1000).toFixed(1)}s`, x + 12, y + 199);
+        ctx.restore();
+      }
+
+      function drawCautions() {
+        const x = W - 306;
+        const y = 304;
+        ctx.save();
+        ctx.fillStyle = "rgba(12,12,12,0.64)";
+        ctx.fillRect(x, y, 276, 102);
+        ctx.strokeStyle = "rgba(255,255,255,0.14)";
+        ctx.strokeRect(x, y, 276, 102);
+        ctx.textAlign = "left";
+        ctx.font = "13px Arial";
+        ctx.fillStyle = "#f2f2f2";
+        ctx.fillText("watch-outs", x + 12, y + 22);
+        ctx.fillStyle = "#bdbdbd";
+        for (let i = 0; i < cautionNotes.length; i += 1) {
+          ctx.fillText(cautionNotes[i], x + 12, y + 45 + i * 20);
+        }
+        ctx.restore();
+      }
+
+      function drawRunEndScreen() {
+        const end = state.end;
+        ctx.save();
+        ctx.fillStyle = "rgba(8,8,8,0.88)";
+        ctx.fillRect(0, 0, W, H);
+        ctx.textAlign = "left";
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "34px Arial";
+        ctx.fillText(end.result === "clear" ? "Run Clear" : "Run End", 110, 96);
+        ctx.font = "18px Arial";
+        ctx.fillStyle = "#d6d6d6";
+        ctx.fillText(`Reached: Room ${end.reachedRoom}/${totalRooms} · ${roomNames[end.reachedRoom - 1]}`, 110, 138);
+        ctx.fillText(`Time: ${formatTime(state.runTime)}`, 110, 166);
+        ctx.fillText(`Traces: ${state.log.traces}   Swaps: ${state.log.swaps}   Eclipse: ${state.log.eclipses}   Hits: ${state.log.hits}`, 110, 194);
+        ctx.fillStyle = "#aeb4bd";
+        const hitText = end.lastHit ? `${end.lastHit.t}s - ${end.lastHit.reason} (${end.lastHit.x}, ${end.lastHit.y})` : "none";
+        ctx.fillText(`Last hit: ${hitText}`, 110, 232);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "20px Arial";
+        ctx.fillText("Choose one scar for the next run", 110, 284);
+        for (let i = 0; i < 3; i += 1) drawScarChoice(i);
+        ctx.fillStyle = "#d6d6d6";
+        ctx.font = "18px Arial";
+        ctx.fillText("Memory fragment", 110, 500);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(end.memory, 110, 532);
+        const btn = restartRect();
+        ctx.fillStyle = end.selectedScar ? "#ffffff" : "#5f5f5f";
+        ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+        ctx.fillStyle = "#111111";
+        ctx.font = "20px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText("다시 흔적을 따라간다", btn.x + btn.w / 2, btn.y + 32);
+        ctx.textAlign = "left";
+        ctx.fillStyle = "#9f9f9f";
+        ctx.font = "14px Arial";
+        ctx.fillText("Keys: 1-3 choose scar · Enter restart", btn.x, btn.y + 72);
+        ctx.restore();
+      }
+
+      function drawScarChoice(index) {
+        const end = state.end;
+        const scar = scarDefs[index];
+        const r = scarRect(index);
+        const selected = end.selectedScar === scar.id;
+        const suggested = end.suggestedScar === scar.id;
+        ctx.fillStyle = selected ? "rgba(255,255,255,0.92)" : "rgba(32,32,32,0.92)";
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+        ctx.strokeStyle = suggested ? "#ffffff" : "rgba(255,255,255,0.22)";
+        ctx.lineWidth = suggested ? 3 : 1;
+        ctx.strokeRect(r.x, r.y, r.w, r.h);
+        ctx.fillStyle = selected ? "#111111" : "#ffffff";
+        ctx.font = "18px Arial";
+        ctx.fillText(`${index + 1}. ${scar.title}`, r.x + 18, r.y + 32);
+        ctx.font = "14px Arial";
+        ctx.fillText(scar.desc, r.x + 18, r.y + 60);
+        if (suggested) {
+          ctx.font = "12px Arial";
+          ctx.fillText("suggested by this run", r.x + 18, r.y + 84);
+        }
+      }
+
+      function scarRect(index) {
+        return { x: 110 + index * 350, y: 310, w: 315, h: 112 };
+      }
+
+      function restartRect() {
+        return { x: 110, y: 574, w: 310, h: 48 };
+      }
+
+      function drawCheck(x, y, ok, text) {
+        ctx.fillStyle = ok ? "#ffffff" : "#8f8f8f";
+        ctx.fillText(`${ok ? "OK" : "--"} ${text}`, x, y);
+      }
+
+      function formatTime(seconds) {
+        const total = Math.round(seconds);
+        return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+      }
+
+      function drawBar(x, y, w, h, ratio, color, label) {
+        ctx.strokeStyle = "#777";
+        ctx.strokeRect(x, y, w, h);
+        ctx.fillStyle = color;
+        ctx.fillRect(x + 2, y + 2, (w - 4) * clamp(ratio, 0, 1), h - 4);
+        ctx.fillStyle = "#aaa";
+        ctx.font = "12px Arial";
+        ctx.fillText(label, x, y - 4);
+      }
+
+      function overlay(title, subtitle) {
+        ctx.fillStyle = "rgba(10,10,10,0.72)";
+        ctx.fillRect(0, 0, W, H);
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#fff";
+        ctx.font = "44px Arial";
+        ctx.fillText(title, W / 2, H / 2 - 18);
+        ctx.fillStyle = "#cfcfcf";
+        ctx.font = "20px Arial";
+        ctx.fillText(subtitle, W / 2, H / 2 + 24);
+      }
+
+      function line(x1, y1, x2, y2) {
+        ctx.beginPath();
+        ctx.moveTo(x1 + 0.5, y1 + 0.5);
+        ctx.lineTo(x2 + 0.5, y2 + 0.5);
+        ctx.stroke();
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function loadImage(src) {
+        const img = new Image();
+        img.src = src;
+        return img;
+      }
+
+      function drawCover(img, x, y, w, h) {
+        if (!img.complete || !img.naturalWidth) return;
+        const scale = Math.max(w / img.naturalWidth, h / img.naturalHeight);
+        const sw = w / scale;
+        const sh = h / scale;
+        const sx = (img.naturalWidth - sw) * 0.5;
+        const sy = (img.naturalHeight - sh) * 0.5;
+        ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
+      }
+    </script>
+  </body>
+</html>
