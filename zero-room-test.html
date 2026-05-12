@@ -286,6 +286,7 @@
           shotCd: 0,
           swapCd: 0,
           eclipseCd: 0,
+          upgrades: { cat: 0, dog: 0, eclipse: 0 },
         };
         state.log = {
           retries: Number(localStorage.getItem("zero-room-retries") || 0),
@@ -304,6 +305,7 @@
           sameTraceTouches: 0,
           restartPressed: 0,
           scarBlocked: false,
+          upgrades: 0,
         };
         setupRoom(1);
       }
@@ -434,6 +436,8 @@
         }
         const nextRoom = state.room + 1;
         state.player.hp = Math.min(state.player.maxHp, state.player.hp + 1);
+        grantUpgrade("cat", 1, "ROOM UP");
+        grantUpgrade("dog", 1, "ROOM UP");
         setupRoom(nextRoom);
       }
 
@@ -602,40 +606,75 @@
         state.enemyBullets.push({ x, y, vx, vy, r, life, kind });
       }
 
+      function bulletHellLevel() {
+        const roomPush = state.room * 0.45;
+        const timePush = Math.min(1.2, state.time / 34);
+        const bossPush = state.room === 4 ? 0.9 : 0;
+        return 1 + roomPush + timePush + bossPush;
+      }
+
       function fireLaneStream(lane, count, gap, kind = "lane") {
-        for (let i = 0; i < count; i += 1) {
+        const density = bulletHellLevel();
+        const total = Math.ceil(count * density);
+        const spacing = Math.max(42, 74 - density * 9);
+        for (let i = 0; i < total; i += 1) {
           const large = kind === "large";
-          fireEnemyBullet(playArea.x + playArea.w + 35 + i * 72, laneYs[lane], large ? -96 : -150, 0, large ? 18 : 8, large ? 9 : 8, large ? "large" : "lane");
+          const wave = Math.sin(i * 0.9) * (large ? 3 : 9);
+          fireEnemyBullet(playArea.x + playArea.w + 35 + i * spacing, laneYs[lane] + wave, large ? -104 : -164, 0, large ? 18 : 8, large ? 9 : 8, large ? "large" : "lane");
         }
       }
 
       function fireCrossLanes(count) {
-        for (let i = 0; i < count; i += 1) {
-          fireEnemyBullet(playArea.x + playArea.w + 40 + i * 82, laneYs[0], -132, 46, 8, 8, "diag");
-          fireEnemyBullet(playArea.x + playArea.w + 80 + i * 82, laneYs[2], -132, -46, 8, 8, "diag");
+        const total = Math.ceil(count * bulletHellLevel());
+        for (let i = 0; i < total; i += 1) {
+          fireEnemyBullet(playArea.x + playArea.w + 40 + i * 62, laneYs[0], -142, 48, 8, 8, "diag");
+          fireEnemyBullet(playArea.x + playArea.w + 80 + i * 62, laneYs[2], -142, -48, 8, 8, "diag");
+          if (i % 2 === 0) fireEnemyBullet(playArea.x + playArea.w + 110 + i * 62, laneYs[1], -132, i % 4 === 0 ? 36 : -36, 7, 8, "diag");
         }
       }
 
       function fireDiagonalRain(count, mode) {
-        for (let i = 0; i < count; i += 1) {
+        const total = Math.ceil(count * bulletHellLevel());
+        for (let i = 0; i < total; i += 1) {
           const y = mode === "up-left" ? laneYs[2] + 28 : laneYs[0] - 28;
           const vy = mode === "up-left" ? -64 : 64;
-          fireEnemyBullet(playArea.x + playArea.w + 20 + i * 82, y, -135, vy, 7, 8, "diag");
+          fireEnemyBullet(playArea.x + playArea.w + 20 + i * 58, y, -145, vy, 7, 8, "diag");
         }
       }
 
       function fireSlowOrbs(count) {
-        for (let i = 0; i < count; i += 1) {
-          fireEnemyBullet(playArea.x + playArea.w + 50 + i * 120, laneYs[i % laneYs.length], -92, 0, 14, 9, "slow");
+        const total = Math.ceil(count * (bulletHellLevel() + 0.4));
+        for (let i = 0; i < total; i += 1) {
+          fireEnemyBullet(playArea.x + playArea.w + 50 + i * 82, laneYs[i % laneYs.length], -96, 0, 14, 9, "slow");
         }
       }
 
       function fireFan(x, y, angle, count, speed) {
-        const spread = 0.72;
-        for (let i = 0; i < count; i += 1) {
-          const t = count === 1 ? 0 : i / (count - 1) - 0.5;
+        const total = Math.ceil(count * (1 + state.room * 0.25));
+        const spread = 0.88 + state.room * 0.06;
+        for (let i = 0; i < total; i += 1) {
+          const t = total === 1 ? 0 : i / (total - 1) - 0.5;
           const a = angle + t * spread;
           fireEnemyBullet(x, y, Math.cos(a) * speed, Math.sin(a) * speed, 8, 7, "fan");
+        }
+      }
+
+      function fireLaneCurtain(offset = 0) {
+        for (let lane = 0; lane < laneYs.length; lane += 1) {
+          for (let i = 0; i < 6 + state.room; i += 1) {
+            const skip = (i + lane + offset) % 5 === 0;
+            if (skip) continue;
+            fireEnemyBullet(playArea.x + playArea.w + 80 + i * 58, laneYs[lane], -118 - state.room * 12, 0, 7, 8, "curtain");
+          }
+        }
+      }
+
+      function fireVortex(x, y, arms = 2) {
+        const total = 16 + state.room * 5;
+        for (let i = 0; i < total; i += 1) {
+          const a = Math.PI + (i / total) * Math.PI * arms;
+          const speed = 118 + (i % 4) * 18;
+          fireEnemyBullet(x, y, Math.cos(a) * speed, Math.sin(a) * speed, 7, 7, "fan");
         }
       }
 
@@ -686,17 +725,31 @@
         if (p.idle < 0.22 || p.shotCd > 0) return;
         const enemy = closestEnemy();
         if (!enemy) return;
+        const level = currentUpgrade();
         const angle = Math.atan2(enemy.y - p.y, enemy.x - p.x);
-        state.bullets.push({
-          x: p.x,
-          y: p.y,
-          vx: Math.cos(angle) * 520,
-          vy: Math.sin(angle) * 520,
-          r: p.role === "cat" ? 4 : 6,
-          damage: role.damage,
-          life: 0.9,
-        });
-        p.shotCd = role.shotCd;
+        const catCount = Math.min(8, 1 + Math.floor((level + 1) / 2));
+        const dogCount = Math.min(7, 1 + Math.floor(level / 2) * 2);
+        const count = p.role === "cat" ? catCount : dogCount;
+        const spread = p.role === "cat" ? 0.08 + level * 0.018 : 0.22 + level * 0.035;
+        const speed = p.role === "cat" ? 560 + level * 28 : 470 + level * 18;
+        const baseDamage = role.damage + (p.role === "dog" ? Math.floor(level / 3) : Math.floor(level / 4));
+        for (let i = 0; i < count; i += 1) {
+          const t = count === 1 ? 0 : i / (count - 1) - 0.5;
+          const a = angle + t * spread;
+          state.bullets.push({
+            x: p.x + Math.cos(a) * 12,
+            y: p.y + Math.sin(a) * 12,
+            vx: Math.cos(a) * speed,
+            vy: Math.sin(a) * speed,
+            r: p.role === "cat" ? 4 + Math.min(2, level * 0.25) : 6 + Math.min(3, level * 0.35),
+            damage: baseDamage,
+            life: p.role === "cat" ? 1.0 + level * 0.03 : 0.82 + level * 0.02,
+            pierce: p.role === "cat" && level >= 5 ? 1 : 0,
+            role: p.role,
+            hit: new Set(),
+          });
+        }
+        p.shotCd = Math.max(0.18, role.shotCd - level * (p.role === "cat" ? 0.035 : 0.025));
         state.log.stopAttacks += 1;
       }
 
@@ -709,11 +762,12 @@
         p.maxHp = roles[p.role].hp;
         p.hp = Math.min(p.maxHp, p.hp + (p.role === "dog" ? 1 : 0));
         p.resonance = Math.min(100, p.resonance + 5);
+        state.log.swaps += 1;
+        if (state.log.swaps % 2 === 0) grantUpgrade(p.role, 1, "SYNC");
         p.swapCd = state.scar === "missed" && !state.log.firstSwapUsed ? 1.05 : 1.5;
         state.log.firstSwapUsed = true;
         p.invuln = p.role === "dog" ? 0.5 : 0.22;
         p.guard = p.role === "dog" ? 0.8 : 0;
-        state.log.swaps += 1;
         addPopup(p.x, p.y - 34, p.role === "dog" ? "GUARD" : "+5");
       }
 
@@ -723,6 +777,7 @@
         p.resonance = 0;
         p.eclipseCd = 1.0;
         state.log.eclipses += 1;
+        grantUpgrade(p.role, 1, "ECLIPSE");
         state.shockwaves.push({ x: p.x, y: p.y, r: 18, life: 0.65, max: 380 });
         state.enemyBullets = [];
         for (let i = state.enemies.length - 1; i >= 0; i -= 1) {
@@ -837,12 +892,15 @@
           let remove = b.life <= 0;
           for (let j = state.enemies.length - 1; j >= 0; j -= 1) {
             const e = state.enemies[j];
+            if (b.hit && b.hit.has(e)) continue;
             if (Math.hypot(e.x - b.x, e.y - b.y) < e.r + b.r) {
               e.hp -= b.damage;
-              remove = true;
-              addPopup(e.x, e.y - 24, "hit");
+              if (b.hit) b.hit.add(e);
+              remove = b.pierce > 0 ? false : true;
+              if (b.pierce > 0) b.pierce -= 1;
+              addPopup(e.x, e.y - 24, b.role === "cat" && b.pierce >= 0 ? "pierce" : "hit");
               if (e.hp <= 0) state.enemies.splice(j, 1);
-              break;
+              if (remove) break;
             }
           }
           if (remove) state.bullets.splice(i, 1);
@@ -912,6 +970,7 @@
             const scarBonus = state.scar === "regret" && !state.log.firstTraceUsed ? 15 : 0;
             const gain = 35 + t.boost + dangerBonus + scarBonus;
             p.resonance = Math.min(100, p.resonance + gain);
+            grantUpgrade(t.from, dangerBonus > 0 ? 2 : 1, dangerBonus > 0 ? "RISK UP" : "TRACE UP");
             state.log.firstTraceUsed = true;
             state.log.traces += 1;
             addPopup(t.x, t.y - 28, `+${gain}`);
@@ -974,6 +1033,25 @@
           }
         }
         return best;
+      }
+
+      function grantUpgrade(role, amount = 1, label = "UP") {
+        const p = state.player;
+        if (!p || !p.upgrades || !p.upgrades[role]) {
+          if (p && p.upgrades) p.upgrades[role] = 0;
+        }
+        if (!p || !p.upgrades || !(role in p.upgrades)) return;
+        const before = p.upgrades[role];
+        p.upgrades[role] = clamp(before + amount, 0, 7);
+        if (p.upgrades[role] !== before) {
+          state.log.upgrades += p.upgrades[role] - before;
+          addPopup(p.x, p.y - 60, `${roles[role].label} ${label} ${p.upgrades[role]}`);
+        }
+      }
+
+      function currentUpgrade() {
+        const p = state.player;
+        return p && p.upgrades ? p.upgrades[p.role] || 0 : 0;
       }
 
       function addPopup(x, y, text) {
